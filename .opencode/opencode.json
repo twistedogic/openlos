@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "skill": {
+      "goal-tracking": "allow",
+      "task-planning": "allow",
+      "daily-digest": "allow"
+    }
+  }
+}
