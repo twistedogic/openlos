@@ -1,7 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { readFileSync, writeFileSync, existsSync } from "fs"
-import { join } from "path"
-import { randomUUID } from "crypto"
+import { execSync } from "child_process"
 
 type GoalStatus = "active" | "completed" | "paused"
 
@@ -28,7 +26,7 @@ function save(worktree: string, goals: Goal[]): void {
 }
 
 export const add = tool({
-  description: "Add a new goal with a title and optional description. Status defaults to 'active'.",
+  description: "Add a new goal (backed by openlos).",
   args: {
     title: tool.schema.string().describe("Short goal title"),
     description: tool.schema
@@ -37,23 +35,17 @@ export const add = tool({
       .describe("Longer description of what success looks like for this goal"),
   },
   async execute(args, context) {
-    const goals = load(context.worktree)
-    const goal: Goal = {
-      id: randomUUID(),
-      title: args.title,
-      description: args.description ?? "",
-      status: "active",
-      created: new Date().toISOString(),
-    }
-    goals.push(goal)
-    save(context.worktree, goals)
-    return `Goal added (id: ${goal.id}): "${goal.title}"`
+    const bin = `${context.worktree}/.opencode/bin/openlos`
+    const cmd = `${bin} goals add --title ${JSON.stringify(args.title)} --description ${JSON.stringify(
+      args.description ?? "",
+    )} --worktree ${JSON.stringify(context.worktree)}`
+    return execSync(cmd, { encoding: "utf-8" }).toString()
   },
 })
 
 export const list = tool({
   description:
-    "List goals. Optionally filter by status (active/completed/paused). Returns all goals if no filter given.",
+    "List goals (backed by openlos). Optionally filter by status (active/completed/paused).",
   args: {
     status: tool.schema
       .enum(["active", "completed", "paused"])
@@ -61,21 +53,16 @@ export const list = tool({
       .describe("Filter by goal status"),
   },
   async execute(args, context) {
-    let goals = load(context.worktree)
-    if (goals.length === 0) return "No goals found."
-    if (args.status) goals = goals.filter((g) => g.status === args.status)
-    if (goals.length === 0) return "No goals match the given filter."
-    return goals
-      .map((g) => {
-        const desc = g.description ? `\n    ${g.description}` : ""
-        return `- [${g.status}] ${g.title}  (id: ${g.id})${desc}`
-      })
-      .join("\n")
+    const bin = `${context.worktree}/.opencode/bin/openlos`
+    const cmd = `${bin} goals list --status ${JSON.stringify(args.status ?? "")} --worktree ${JSON.stringify(
+      context.worktree,
+    )}`
+    return execSync(cmd, { encoding: "utf-8" }).toString()
   },
 })
 
 export const update = tool({
-  description: "Update a goal's status or description by its UUID.",
+  description: "Update a goal (backed by openlos).",
   args: {
     id: tool.schema.string().uuid().describe("UUID of the goal to update"),
     status: tool.schema
@@ -85,12 +72,12 @@ export const update = tool({
     description: tool.schema.string().optional().describe("Updated description for the goal"),
   },
   async execute(args, context) {
-    const goals = load(context.worktree)
-    const idx = goals.findIndex((g) => g.id === args.id)
-    if (idx === -1) return `Goal not found: ${args.id}`
-    if (args.status !== undefined) goals[idx].status = args.status
-    if (args.description !== undefined) goals[idx].description = args.description
-    save(context.worktree, goals)
-    return `Goal updated (id: ${args.id}): status=${goals[idx].status}`
+    const bin = `${context.worktree}/.opencode/bin/openlos`
+    const cmd = `${bin} goals update --id ${JSON.stringify(args.id)} --status ${JSON.stringify(
+      args.status ?? "",
+    )} --description ${JSON.stringify(args.description ?? "")} --worktree ${JSON.stringify(
+      context.worktree,
+    )}`
+    return execSync(cmd, { encoding: "utf-8" }).toString()
   },
 })

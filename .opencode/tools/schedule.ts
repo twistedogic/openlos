@@ -1,6 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { readFileSync, writeFileSync, existsSync } from "fs"
-import { join } from "path"
+import { execSync } from "child_process"
 
 interface TimeBlock {
   time: string
@@ -33,8 +32,7 @@ function todayISO(): string {
 }
 
 export const read = tool({
-  description:
-    "Read the schedule for a given date (YYYY-MM-DD). Defaults to today if no date is provided.",
+  description: "Read the schedule for a given date (YYYY-MM-DD). (backed by openlos)",
   args: {
     date: tool.schema
       .string()
@@ -42,21 +40,16 @@ export const read = tool({
       .describe("Date in YYYY-MM-DD format. Defaults to today."),
   },
   async execute(args, context) {
-    const date = args.date ?? todayISO()
-    const schedule = load(context.worktree)
-    const day = schedule[date]
-    if (!day) return `No schedule found for ${date}.`
-    const blocks =
-      day.blocks.length > 0
-        ? day.blocks.map((b) => `  ${b.time}  ${b.activity}`).join("\n")
-        : "  (no time blocks set)"
-    return `Schedule for ${date}\nFocus: ${day.focus}\n\n${blocks}`
+    const bin = `${context.worktree}/.opencode/bin/openlos`
+    const cmd = `${bin} schedule read --date ${JSON.stringify(args.date ?? "")} --worktree ${JSON.stringify(
+      context.worktree,
+    )}`
+    return execSync(cmd, { encoding: "utf-8" }).toString()
   },
 })
 
 export const write = tool({
-  description:
-    "Write or update the schedule for a given date (YYYY-MM-DD). Provide a focus theme and optional time blocks.",
+  description: "Write or update the schedule for a given date (YYYY-MM-DD). (backed by openlos)",
   args: {
     date: tool.schema
       .string()
@@ -74,14 +67,12 @@ export const write = tool({
       .describe("Ordered list of time blocks for the day"),
   },
   async execute(args, context) {
-    const date = args.date ?? todayISO()
-    const schedule = load(context.worktree)
-    schedule[date] = {
-      focus: args.focus,
-      blocks: args.blocks ?? [],
-    }
-    save(context.worktree, schedule)
-    const count = (args.blocks ?? []).length
-    return `Schedule saved for ${date}: "${args.focus}" with ${count} time block(s).`
+    const bin = `${context.worktree}/.opencode/bin/openlos`
+    // convert blocks into comma-separated HH:MM|Activity strings
+    const blocksArg = (args.blocks ?? []).map((b: any) => `${b.time}|${b.activity}`).join(",")
+    const cmd = `${bin} schedule write --date ${JSON.stringify(args.date ?? "")} --focus ${JSON.stringify(
+      args.focus,
+    )} --blocks ${JSON.stringify(blocksArg)} --worktree ${JSON.stringify(context.worktree)}`
+    return execSync(cmd, { encoding: "utf-8" }).toString()
   },
 })
