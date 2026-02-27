@@ -1,8 +1,7 @@
 package main
 
 import (
-	"encoding/json"
-	"io/ioutil"
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -25,19 +24,18 @@ func buildBinary(t *testing.T) string {
 
 func TestIdeasRoundtrip(t *testing.T) {
 	td := t.TempDir()
-	// call ideasLog directly
 	if err := ideasLog(td, "unit test idea"); err != nil {
 		t.Fatalf("ideasLog failed: %v", err)
 	}
-	// verify file
-	p := filepath.Join(td, "data", "ideas.json")
-	b, err := ioutil.ReadFile(p)
+	// verify via list
+	q, sqlDB, err := openDB(td)
 	if err != nil {
-		t.Fatalf("read ideas.json: %v", err)
+		t.Fatalf("openDB: %v", err)
 	}
-	var arr []Idea
-	if err := json.Unmarshal(b, &arr); err != nil {
-		t.Fatalf("unmarshal ideas: %v", err)
+	defer sqlDB.Close()
+	arr, err := q.ListIdeas(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
 	}
 	if len(arr) != 1 {
 		t.Fatalf("expected 1 idea, got %d", len(arr))
@@ -99,15 +97,15 @@ func TestGoalsAndSchedule(t *testing.T) {
 	if err := goalsAdd(td, "goal one", "do important stuff"); err != nil {
 		t.Fatalf("goalsAdd failed: %v", err)
 	}
-	// verify file
-	gp := filepath.Join(td, "data", "goals.json")
-	gb, err := ioutil.ReadFile(gp)
+	// verify via DB
+	q, sqlDB, err := openDB(td)
 	if err != nil {
-		t.Fatalf("read goals.json: %v", err)
+		t.Fatalf("openDB: %v", err)
 	}
-	var goals []Goal
-	if err := json.Unmarshal(gb, &goals); err != nil {
-		t.Fatalf("unmarshal goals: %v", err)
+	defer sqlDB.Close()
+	goals, err := q.ListGoals(context.Background())
+	if err != nil {
+		t.Fatalf("ListGoals: %v", err)
 	}
 	if len(goals) != 1 || goals[0].Title != "goal one" {
 		t.Fatalf("unexpected goals content: %+v", goals)
@@ -130,14 +128,18 @@ func TestGoalsAndSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("goals update CLI failed: %v\n%s", err, string(out))
 	}
-	// re-read and verify status
-	gb2, _ := ioutil.ReadFile(gp)
-	var goals2 []Goal
-	if err := json.Unmarshal(gb2, &goals2); err != nil {
-		t.Fatalf("unmarshal goals after update: %v", err)
+	// re-verify via DB
+	q2, sqlDB2, err := openDB(td)
+	if err != nil {
+		t.Fatalf("openDB after update: %v", err)
 	}
-	if goals2[0].Status != "completed" {
-		t.Fatalf("expected status completed, got %s", goals2[0].Status)
+	defer sqlDB2.Close()
+	updated, err := q2.GetGoal(context.Background(), gid)
+	if err != nil {
+		t.Fatalf("GetGoal: %v", err)
+	}
+	if updated.Status != "completed" {
+		t.Fatalf("expected status completed, got %s", updated.Status)
 	}
 
 	// schedule write via CLI
@@ -160,18 +162,25 @@ func TestGoalsAndSchedule(t *testing.T) {
 		t.Fatalf("schedule read missing content: %s", string(out))
 	}
 
-	// also inspect schedule.json
-	sp := filepath.Join(td, "data", "schedule.json")
-	sb, err := ioutil.ReadFile(sp)
+	// verify schedule via DB
+	q3, sqlDB3, err := openDB(td)
 	if err != nil {
-		t.Fatalf("read schedule.json: %v", err)
+		t.Fatalf("openDB for schedule: %v", err)
 	}
-	var sched Schedule
-	if err := json.Unmarshal(sb, &sched); err != nil {
-		t.Fatalf("unmarshal schedule: %v", err)
+	defer sqlDB3.Close()
+	sched, err := q3.GetSchedule(context.Background(), "2026-03-01")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
 	}
-	if day, ok := sched["2026-03-01"]; !ok || day.Focus != "Sprint Planning" || len(day.Blocks) != 2 {
-		t.Fatalf("unexpected schedule content: %+v", sched)
+	if sched.Focus != "Sprint Planning" {
+		t.Fatalf("unexpected schedule focus: %s", sched.Focus)
+	}
+	blocks, err := unmarshalBlocks(*sched.Blocks)
+	if err != nil {
+		t.Fatalf("unmarshalBlocks: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
 	}
 }
 
@@ -185,38 +194,44 @@ func TestTasksUpdateClearDue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tasks add failed: %v\n%s", err, string(out))
 	}
-	// read tasks.json
-	tp := filepath.Join(td, "data", "tasks.json")
-	tb, err := ioutil.ReadFile(tp)
+
+	// verify via DB
+	q, sqlDB, err := openDB(td)
 	if err != nil {
-		t.Fatalf("read tasks.json: %v", err)
+		t.Fatalf("openDB: %v", err)
 	}
-	var tasks []Task
-	if err := json.Unmarshal(tb, &tasks); err != nil {
-		t.Fatalf("unmarshal tasks: %v", err)
+	defer sqlDB.Close()
+	tasks, err := q.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].Due == nil || *tasks[0].Due != "2026-03-05" {
 		t.Fatalf("unexpected task after add: %+v", tasks)
 	}
+	taskID := tasks[0].ID
+	sqlDB.Close()
+
+	// pause briefly so created timestamps differ if needed
+	time.Sleep(10 * time.Millisecond)
 
 	// update to clear due
-	id := tasks[0].ID
-	// pause briefly to ensure timestamps differ if needed
-	time.Sleep(10 * time.Millisecond)
-	cmd = exec.Command(bin, "tasks", "update", "--id", id, "--due", "null", "--worktree", td)
+	cmd = exec.Command(bin, "tasks", "update", "--id", taskID, "--due", "null", "--worktree", td)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("tasks update failed: %v\n%s", err, string(out))
 	}
-	tb2, err := ioutil.ReadFile(tp)
+
+	// verify due is cleared
+	q2, sqlDB2, err := openDB(td)
 	if err != nil {
-		t.Fatalf("read tasks.json after update: %v", err)
+		t.Fatalf("openDB after update: %v", err)
 	}
-	var tasks2 []Task
-	if err := json.Unmarshal(tb2, &tasks2); err != nil {
-		t.Fatalf("unmarshal tasks after update: %v", err)
+	defer sqlDB2.Close()
+	updated, err := q2.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
 	}
-	if tasks2[0].Due != nil {
-		t.Fatalf("expected due cleared, got %+v", tasks2[0].Due)
+	if updated.Due != nil {
+		t.Fatalf("expected due cleared, got %+v", updated.Due)
 	}
 }

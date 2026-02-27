@@ -1,18 +1,28 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/twistedogic/openlos/assets"
+	"github.com/twistedogic/openlos/db"
+	_ "modernc.org/sqlite"
 )
+
+//go:embed schema.sql
+var schema string
 
 func worktreeFromEnvOrFlag(wFlag string) string {
 	if wFlag != "" && wFlag != "." {
@@ -24,82 +34,71 @@ func worktreeFromEnvOrFlag(wFlag string) string {
 	return "."
 }
 
-func dataPath(worktree, file string) string {
-	return filepath.Join(worktree, "data", file)
-}
-
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		// treat missing file as empty result
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, v)
-}
-
-func writeJSON(path string, v any) error {
-	dir := filepath.Dir(path)
+func openDB(worktree string) (*db.Queries, *sql.DB, error) {
+	dir := filepath.Join(worktree, "data")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, nil, err
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
+	dbPath := filepath.Join(dir, "openlos.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o644)
+	if _, err := sqlDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		sqlDB.Close()
+		return nil, nil, err
+	}
+	if _, err := sqlDB.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		sqlDB.Close()
+		return nil, nil, err
+	}
+	if _, err := sqlDB.Exec(schema); err != nil {
+		sqlDB.Close()
+		return nil, nil, err
+	}
+	return db.New(sqlDB), sqlDB, nil
 }
 
-// models
-type Idea struct {
-	ID      string    `json:"id"`
-	Text    string    `json:"text"`
-	Created time.Time `json:"created"`
-}
-
-type Task struct {
-	ID      string    `json:"id"`
-	Title   string    `json:"title"`
-	GoalID  *string   `json:"goal_id"`
-	Status  string    `json:"status"`
-	Created time.Time `json:"created"`
-	Due     *string   `json:"due"`
-}
-
-type Goal struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	Created     time.Time `json:"created"`
-}
-
+// TimeBlock is the value type for schedule blocks; stored as JSON in the DB.
 type TimeBlock struct {
 	Time     string `json:"time"`
 	Activity string `json:"activity"`
 }
 
-type DaySchedule struct {
-	Date   time.Time   `json:"date"`
-	Focus  string      `json:"focus"`
-	Blocks []TimeBlock `json:"blocks"`
+func marshalBlocks(blocks []TimeBlock) (string, error) {
+	b, err := json.Marshal(blocks)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
-type Schedule map[string]DaySchedule
+func unmarshalBlocks(s string) ([]TimeBlock, error) {
+	var blocks []TimeBlock
+	if s == "" {
+		return blocks, nil
+	}
+	if err := json.Unmarshal([]byte(s), &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
 
 // ideas
+
 func ideasLog(worktree, text string) error {
-	var arr []Idea
-	p := dataPath(worktree, "ideas.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	entry := Idea{ID: uuid.NewString(), Text: text, Created: time.Now()}
-	arr = append(arr, entry)
-	if err := writeJSON(p, arr); err != nil {
+	defer sqlDB.Close()
+
+	entry, err := q.CreateIdea(context.Background(), db.CreateIdeaParams{
+		ID:      uuid.NewString(),
+		Text:    text,
+		Created: time.Now().Unix(),
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Printf("Idea captured (id: %s): %q\n", entry.ID, entry.Text)
@@ -107,37 +106,46 @@ func ideasLog(worktree, text string) error {
 }
 
 func ideasList(worktree string, limit int) error {
-	var arr []Idea
-	p := dataPath(worktree, "ideas.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	if limit <= 0 {
+		limit = int(^uint(0) >> 1) // math.MaxInt
+	}
+	arr, err := q.ListIdeas(context.Background(), int64(limit))
+	if err != nil {
 		return err
 	}
 	if len(arr) == 0 {
 		fmt.Println("No ideas captured yet.")
 		return nil
 	}
-	// most recent first
-	slices.SortFunc(arr, func(a, b Idea) int { return b.Created.Compare(a.Created) })
-	if limit <= 0 || limit > len(arr) {
-		limit = len(arr)
-	}
-	for i := 0; i < limit; i++ {
-		it := arr[i]
-		fmt.Printf("%d. [%s] %s  (id: %s)\n", i+1, it.Created, it.Text, it.ID)
+	for i, it := range arr {
+		fmt.Printf("%d. [%s] %s  (id: %s)\n", i+1, time.Unix(it.Created, 0).Format(time.DateTime), it.Text, it.ID)
 	}
 	return nil
 }
 
 // goals
+
 func goalsAdd(worktree, title, description string) error {
-	var arr []Goal
-	p := dataPath(worktree, "goals.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	g := Goal{ID: uuid.NewString(), Title: title, Description: description, Status: "active", Created: time.Now()}
-	arr = append(arr, g)
-	if err := writeJSON(p, arr); err != nil {
+	defer sqlDB.Close()
+
+	g, err := q.CreateGoal(context.Background(), db.CreateGoalParams{
+		ID:          uuid.NewString(),
+		Title:       title,
+		Description: &description,
+		Status:      "active",
+		Created:     time.Now().Unix(),
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Printf("Goal added (id: %s): \"%s\"\n", g.ID, g.Title)
@@ -145,34 +153,33 @@ func goalsAdd(worktree, title, description string) error {
 }
 
 func goalsList(worktree, status string) error {
-	var arr []Goal
-	p := dataPath(worktree, "goals.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	var arr []db.Goal
+	if status == "" {
+		arr, err = q.ListGoals(context.Background())
+	} else {
+		arr, err = q.ListGoalsByStatus(context.Background(), status)
+	}
+	if err != nil {
 		return err
 	}
 	if len(arr) == 0 {
-		fmt.Println("No goals found.")
-		return nil
-	}
-
-	var out []Goal
-	if status == "" {
-		out = arr
-	} else {
-		for _, g := range arr {
-			if g.Status == status {
-				out = append(out, g)
-			}
+		if status == "" {
+			fmt.Println("No goals found.")
+		} else {
+			fmt.Println("No goals match the given filter.")
 		}
-	}
-	if len(out) == 0 {
-		fmt.Println("No goals match the given filter.")
 		return nil
 	}
-	for _, g := range out {
+	for _, g := range arr {
 		desc := ""
-		if strings.TrimSpace(g.Description) != "" {
-			desc = "\n    " + g.Description
+		if g.Description != nil && strings.TrimSpace(*g.Description) != "" {
+			desc = "\n    " + *g.Description
 		}
 		fmt.Printf("- [%s] %s  (id: %s)%s\n", g.Status, g.Title, g.ID, desc)
 	}
@@ -180,41 +187,53 @@ func goalsList(worktree, status string) error {
 }
 
 func goalsUpdate(worktree, id, status, description string) error {
-	var arr []Goal
-	p := dataPath(worktree, "goals.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	idx := -1
-	for i, g := range arr {
-		if g.ID == id {
-			idx = i
-			break
+	defer sqlDB.Close()
+
+	if status != "" && status != "active" && status != "completed" && status != "paused" {
+		return errors.New("Invalid status. Must be one of: active, completed, paused")
+	}
+
+	ctx := context.Background()
+	current, err := q.GetGoal(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("Goal not found: " + id)
 		}
-	}
-	if idx == -1 {
-		return errors.New("Goal not found: " + id)
-	}
-	if status != "" {
-		arr[idx].Status = status
-	}
-	if description != "" {
-		arr[idx].Description = description
-	}
-	if err := writeJSON(p, arr); err != nil {
 		return err
 	}
-	fmt.Printf("Goal updated (id: %s): status=%s\n", id, arr[idx].Status)
+	newStatus := current.Status
+	if status != "" {
+		newStatus = status
+	}
+	newDesc := current.Description
+	if description != "" {
+		newDesc = &description
+	}
+	updated, err := q.UpdateGoal(ctx, db.UpdateGoalParams{
+		ID:          id,
+		Status:      newStatus,
+		Description: newDesc,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Goal updated (id: %s): status=%s\n", updated.ID, updated.Status)
 	return nil
 }
 
 // tasks
+
 func tasksAdd(worktree, title, goalID, due string) error {
-	var arr []Task
-	p := dataPath(worktree, "tasks.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
+	defer sqlDB.Close()
+
 	var goalPtr *string
 	if strings.TrimSpace(goalID) != "" {
 		g := goalID
@@ -225,9 +244,18 @@ func tasksAdd(worktree, title, goalID, due string) error {
 		d := due
 		duePtr = &d
 	}
-	t := Task{ID: uuid.NewString(), Title: title, GoalID: goalPtr, Status: "open", Created: time.Now(), Due: duePtr}
-	arr = append(arr, t)
-	if err := writeJSON(p, arr); err != nil {
+	t, err := q.CreateTask(context.Background(), db.CreateTaskParams{
+		ID:      uuid.NewString(),
+		Title:   title,
+		GoalID:  goalPtr,
+		Status:  "open",
+		Created: time.Now().Unix(),
+		Due:     duePtr,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint") {
+			return errors.New("Goal not found: " + *goalPtr)
+		}
 		return err
 	}
 	dueMsg := ""
@@ -239,32 +267,45 @@ func tasksAdd(worktree, title, goalID, due string) error {
 }
 
 func tasksList(worktree, status, goalID string) error {
-	var arr []Task
-	p := dataPath(worktree, "tasks.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	ctx := context.Background()
+	var arr []db.Task
+
+	hasStatus := status != ""
+	hasGoal := goalID != ""
+
+	switch {
+	case hasStatus && hasGoal:
+		g := goalID
+		arr, err = q.ListTasksByStatusAndGoal(ctx, db.ListTasksByStatusAndGoalParams{
+			Status: status,
+			GoalID: &g,
+		})
+	case hasStatus:
+		arr, err = q.ListTasksByStatus(ctx, status)
+	case hasGoal:
+		g := goalID
+		arr, err = q.ListTasksByGoal(ctx, &g)
+	default:
+		arr, err = q.ListTasks(ctx)
+	}
+	if err != nil {
 		return err
 	}
 	if len(arr) == 0 {
-		fmt.Println("No tasks found.")
+		if hasStatus || hasGoal {
+			fmt.Println("No tasks match the given filters.")
+		} else {
+			fmt.Println("No tasks found.")
+		}
 		return nil
 	}
-	var out []Task
 	for _, t := range arr {
-		if status != "" && t.Status != status {
-			continue
-		}
-		if goalID != "" {
-			if t.GoalID == nil || *t.GoalID != goalID {
-				continue
-			}
-		}
-		out = append(out, t)
-	}
-	if len(out) == 0 {
-		fmt.Println("No tasks match the given filters.")
-		return nil
-	}
-	for _, t := range out {
 		due := ""
 		if t.Due != nil {
 			due = fmt.Sprintf(" [due: %s]", *t.Due)
@@ -279,67 +320,82 @@ func tasksList(worktree, status, goalID string) error {
 }
 
 func tasksUpdate(worktree, id, status, due string) error {
-	var arr []Task
-	p := dataPath(worktree, "tasks.json")
-	if err := readJSON(p, &arr); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	idx := -1
-	for i, t := range arr {
-		if t.ID == id {
-			idx = i
-			break
+	defer sqlDB.Close()
+
+	ctx := context.Background()
+	current, err := q.GetTask(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("Task not found: " + id)
 		}
+		return err
 	}
-	if idx == -1 {
-		return errors.New("Task not found: " + id)
-	}
+	newStatus := current.Status
 	if status != "" {
-		arr[idx].Status = status
+		newStatus = status
 	}
+	newDue := current.Due
 	if due != "" {
 		if due == "null" {
-			arr[idx].Due = nil
+			newDue = nil
 		} else {
 			d := due
-			arr[idx].Due = &d
+			newDue = &d
 		}
 	}
-	if err := writeJSON(p, arr); err != nil {
+	updated, err := q.UpdateTask(ctx, db.UpdateTaskParams{
+		ID:     id,
+		Status: newStatus,
+		Due:    newDue,
+	})
+	if err != nil {
 		return err
 	}
 	dueVal := "none"
-	if arr[idx].Due != nil {
-		dueVal = *arr[idx].Due
+	if updated.Due != nil {
+		dueVal = *updated.Due
 	}
-	fmt.Printf("Task updated (id: %s): status=%s, due=%s\n", id, arr[idx].Status, dueVal)
+	fmt.Printf("Task updated (id: %s): status=%s, due=%s\n", updated.ID, updated.Status, dueVal)
 	return nil
 }
 
 // schedule
+
 func scheduleRead(worktree, date string) error {
 	if date == "" {
 		date = time.Now().UTC().Format(time.DateOnly)
 	}
-	var s Schedule
-	p := dataPath(worktree, "schedule.json")
-	if err := readJSON(p, &s); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	day, ok := s[date]
-	if !ok {
-		fmt.Printf("No schedule found for %s.\n", date)
-		return nil
+	defer sqlDB.Close()
+
+	row, err := q.GetSchedule(context.Background(), date)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			fmt.Printf("No schedule found for %s.\n", date)
+			return nil
+		}
+		return err
 	}
-	blocks := "  (no time blocks set)"
-	if len(day.Blocks) > 0 {
+	blocks, err := unmarshalBlocks(*row.Blocks)
+	if err != nil {
+		return err
+	}
+	blockStr := "  (no time blocks set)"
+	if len(blocks) > 0 {
 		var sb strings.Builder
-		for _, b := range day.Blocks {
+		for _, b := range blocks {
 			fmt.Fprintf(&sb, "  %s  %s\n", b.Time, b.Activity)
 		}
-		blocks = strings.TrimRight(sb.String(), "\n")
+		blockStr = strings.TrimRight(sb.String(), "\n")
 	}
-	fmt.Printf("Schedule for %s\nFocus: %s\n\n%s\n", date, day.Focus, blocks)
+	fmt.Printf("Schedule for %s\nFocus: %s\n\n%s\n", date, row.Focus, blockStr)
 	return nil
 }
 
@@ -347,34 +403,131 @@ func scheduleWrite(worktree, date, focus string, blocks []string) error {
 	if date == "" {
 		date = time.Now().UTC().Format(time.DateOnly)
 	}
-	var s Schedule
-	p := dataPath(worktree, "schedule.json")
-	if err := readJSON(p, &s); err != nil {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
 		return err
 	}
-	if s == nil {
-		s = make(Schedule)
-	}
+	defer sqlDB.Close()
+
 	tb := []TimeBlock{}
 	for _, b := range blocks {
-		// expect format HH:MM|Activity
 		parts := strings.SplitN(b, "|", 2)
 		if len(parts) != 2 {
 			return errors.New("invalid block format, expected HH:MM|Activity")
 		}
 		tb = append(tb, TimeBlock{Time: parts[0], Activity: parts[1]})
 	}
-	s[date] = DaySchedule{Focus: focus, Blocks: tb}
-	if err := writeJSON(p, s); err != nil {
+	blocksJSON, err := marshalBlocks(tb)
+	if err != nil {
+		return err
+	}
+	_, err = q.UpsertSchedule(context.Background(), db.UpsertScheduleParams{
+		Date:   date,
+		Focus:  focus,
+		Blocks: &blocksJSON,
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Printf("Schedule saved for %s: \"%s\" with %d time block(s).\n", date, focus, len(tb))
 	return nil
 }
 
+// install
+
+func copyEmbeddedFile(embedded fs.FS, path, target string) error {
+	src, err := embedded.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	_, err = io.Copy(dst, src)
+	return err
+}
+
+func install(dir string, force bool) error {
+	embedded, err := assets.FS()
+	if err != nil {
+		return fmt.Errorf("load embedded assets: %w", err)
+	}
+
+	// Write embedded .opencode files.
+	err = fs.WalkDir(embedded, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, ".opencode", filepath.FromSlash(path))
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !force {
+			if _, err := os.Stat(target); err == nil {
+				fmt.Printf("  skip (exists): %s\n", target)
+				return nil
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := copyEmbeddedFile(embedded, path, target); err != nil {
+			return err
+		}
+		fmt.Printf("  write: %s\n", target)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Copy the running binary to .opencode/bin/openlos.
+	binDst := filepath.Join(dir, ".opencode", "bin", "openlos")
+	if !force {
+		if _, err := os.Stat(binDst); err == nil {
+			fmt.Printf("  skip (exists): %s\n", binDst)
+			return nil
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+	// Follow symlinks (e.g. go run produces a temp binary).
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fmt.Errorf("eval symlinks: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".opencode", "bin"), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(exe)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(binDst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	fmt.Printf("  write: %s\n", binDst)
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: openlos <ideas|tasks|goals|schedule> <subcommand> [flags]")
+		fmt.Println("usage: openlos <ideas|tasks|goals|schedule|install> <subcommand> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -566,6 +719,26 @@ func main() {
 			fmt.Println("unknown schedule subcommand:", sub)
 			os.Exit(2)
 		}
+	case "install":
+		fs := flag.NewFlagSet("install", flag.ExitOnError)
+		dir := fs.String("dir", ".", "target directory to install .opencode into")
+		force := fs.Bool("force", false, "overwrite existing files")
+		fs.Parse(os.Args[2:])
+		d := *dir
+		if d == "." {
+			var err error
+			d, err = os.Getwd()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		}
+		fmt.Printf("Installing openlos into %s/.opencode/\n", d)
+		if err := install(d, *force); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Done.")
 	default:
 		fmt.Println("unknown command:", cmd)
 		os.Exit(2)
