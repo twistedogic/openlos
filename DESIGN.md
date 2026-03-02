@@ -187,6 +187,27 @@ Skills are markdown files with YAML frontmatter, loaded by picoclaw via the nati
 
 ---
 
+## Conventions
+
+### Commit Messages
+
+Format: `type: description (lowercase)`
+
+Types:
+- `feat`: New features
+- `refactor`: Code refactoring (no behavioral change)
+- `chore`: Maintenance, tooling, dependencies
+- `agent`: Changes to agent definitions or prompts
+
+Examples:
+```
+feat: add tasksStatusChecker and scheduleSuggester CLI tools
+refactor: target picoclaw instead of opencode
+chore: add opencode agent
+```
+
+---
+
 ## Non-Goals
 
 - No web UI or API server (use picoclaw channels instead)
