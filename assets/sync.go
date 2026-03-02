@@ -1,6 +1,6 @@
 //go:build ignore
 
-// sync.go stages .opencode/ → assets/opencode/ excluding node_modules/, bin/, and .gitignore.
+// sync.go stages .picoclaw/ → assets/picoclaw/ excluding node_modules/, bin/, and .gitignore.
 // Run via: go generate ./assets/
 package main
 
@@ -23,8 +23,8 @@ var skipFiles = map[string]bool{
 }
 
 func main() {
-	src := filepath.Join("..", ".opencode")
-	dst := filepath.Join("opencode")
+	src := filepath.Join("..", ".picoclaw")
+	dst := filepath.Join("picoclaw")
 
 	// Remove stale staged tree so deleted source files don't linger.
 	if err := os.RemoveAll(dst); err != nil {
