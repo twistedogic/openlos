@@ -264,9 +264,91 @@ CREATE TABLE transactions (
 
 ---
 
+### Periodic Task & Schedule Assistant
+
+Leverage picoclaw's native heartbeat to periodically check task status and proactively suggest the daily schedule.
+
+#### How It Works
+
+1. Create `HEARTBEAT.md` in the workspace
+2. Picoclaw reads it every 30 minutes (default interval)
+3. Executes tasks using available tools
+4. Outputs results to CLI
+
+#### Configuration
+
+```json
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval": 30
+  }
+}
+```
+
+#### HEARTBEAT.md
+
+```markdown
+# Periodic Tasks
+
+## Quick Tasks (respond directly)
+- Run task_status_checker to check for overdue and due-today tasks
+- If tasks are overdue, reschedule them to today and notify the user
+
+## Long Tasks (use spawn for async)
+- Run schedule_suggester to analyze tasks and goals, then suggest today's schedule if none exists
+```
+
+#### Tools
+
+| Tool | Description |
+|------|-------------|
+| `task_status_checker` | Check for overdue and due-today tasks; auto-reschedule overdue tasks to today |
+| `schedule_suggester` | Analyze tasks and goals; suggest today's schedule if none exists |
+
+#### task_status_checker Logic
+
+1. Query all open tasks via `tasks_list`
+2. Identify overdue tasks (due date < today)
+3. For each overdue task: update due date to today via `tasks_update`
+4. Output summary: "Found X overdue task(s) (rescheduled to today), Y task(s) due today"
+
+#### schedule_suggester Logic
+
+1. Check if today's schedule exists via `schedule_read`
+2. If exists: skip (output "Schedule already set for today")
+3. If not: generate suggestion using daily-digest logic
+4. Output suggestion to CLI, ask user to confirm
+
+#### Data Flow
+
+```
+Picoclaw Heartbeat (every 30 min)
+    │
+    ├─→ task_status_checker
+    │   ├─→ Query open tasks
+    │   ├─→ Find overdue → reschedule to today
+    │   └─→ CLI output: "2 overdue tasks moved to today"
+    │
+    └─→ schedule_suggester (spawned)
+        ├─→ Check today's schedule
+        ├─→ If none: generate suggestion
+        └─→ CLI output: "No schedule set. Suggested focus: ..."
+```
+
+#### Files to Modify/Create
+
+| File | Action |
+|------|--------|
+| `.picoclaw/HEARTBEAT.md` | Create |
+| `.picoclaw/TOOLS.md` | Add `task_status_checker`, `schedule_suggester` tools |
+| `main.go` | Add `tasks reschedule` command |
+| `.picoclaw/skills/daily-digest.md` | Update to mention auto-reschedule |
+
+---
+
 ### Other Extensions
 
 - Add more chat channels (Telegram, Discord, WhatsApp) via picoclaw config
-- Enable heartbeat for periodic task reminders
 - Integrate with picoclaw's memory system for long-term context
 - Export command to emit Markdown reports

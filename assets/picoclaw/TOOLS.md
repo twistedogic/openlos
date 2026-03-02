@@ -119,3 +119,11 @@
     type: string
     required: false
     description: Comma-separated time blocks in format "HH:MM|Activity"
+
+### task_status_checker
+- description: Check for overdue and due-today tasks. Auto-reschedules overdue tasks to today. Used by heartbeat for periodic status checks.
+- params: (none)
+
+### schedule_suggester
+- description: Analyze tasks and goals to suggest today's schedule. Only suggests if no schedule exists for today. Used by heartbeat for proactive scheduling.
+- params: (none)

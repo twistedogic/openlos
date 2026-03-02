@@ -10,6 +10,7 @@ description: Format rules and content guidelines for generating a focused mornin
 - Highlight any overdue tasks or stalled goals that need attention
 - Suggest a single "focus theme" for the day
 - Optionally write the digest to the schedule for today via `schedule_write`
+- **Auto-reschedule**: When overdue tasks are found, call `tasks_update` to set their due date to today (the heartbeat will handle this automatically)
 
 ## Data to gather before generating
 

@@ -31,9 +31,6 @@ func worktreeFromEnvOrFlag(wFlag string) string {
 	if w := os.Getenv("PICOCLAW_WORKSPACE"); w != "" {
 		return w
 	}
-	if w := os.Getenv("OPENLOS_WORKTREE"); w != "" {
-		return w
-	}
 	return "."
 }
 
@@ -366,6 +363,88 @@ func tasksUpdate(worktree, id, status, due string) error {
 	return nil
 }
 
+func tasksStatusChecker(worktree string) error {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	allTasks, err := q.ListTasksByStatus(context.Background(), "open")
+	if err != nil {
+		return err
+	}
+
+	today := time.Now().UTC().Format(time.DateOnly)
+	var overdueCount, dueTodayCount, rescheduledCount int
+
+	for _, t := range allTasks {
+		if t.Due != nil && *t.Due < today {
+			_, err := q.UpdateTask(context.Background(), db.UpdateTaskParams{
+				ID:     t.ID,
+				Status: t.Status,
+				Due:    &today,
+			})
+			if err != nil {
+				return err
+			}
+			rescheduledCount++
+		}
+		if t.Due != nil && *t.Due == today {
+			dueTodayCount++
+		}
+	}
+
+	overdueCount = rescheduledCount
+
+	fmt.Printf("Task status check complete: %d overdue task(s) rescheduled to today, %d task(s) due today\n", overdueCount, dueTodayCount)
+	return nil
+}
+
+func scheduleSuggester(worktree string) error {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	today := time.Now().UTC().Format(time.DateOnly)
+	_, err = q.GetSchedule(context.Background(), today)
+	if err == nil {
+		fmt.Printf("Schedule already set for today.\n")
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	allGoals, err := q.ListGoalsByStatus(context.Background(), "active")
+	if err != nil {
+		return err
+	}
+	if len(allGoals) == 0 {
+		fmt.Println("No schedule suggestion: no active goals set. Create some goals first!")
+		return nil
+	}
+
+	allTasks, err := q.ListTasksByStatus(context.Background(), "open")
+	if err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Suggested focus for today: ")
+	if len(allGoals) > 0 {
+		sb.WriteString(allGoals[0].Title)
+	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("You have %d open task(s) across %d active goal(s)\n", len(allTasks), len(allGoals)))
+	sb.WriteString("Run 'openlos schedule write --focus \"...\"' to set your schedule for today")
+
+	fmt.Println(sb.String())
+	return nil
+}
+
 // schedule
 
 func scheduleRead(worktree, date string) error {
@@ -624,7 +703,7 @@ func main() {
 		}
 	case "tasks":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: openlos tasks <add|list|update> [flags]")
+			fmt.Println("usage: openlos tasks <add|list|update|status-checker|suggester> [flags]")
 			os.Exit(2)
 		}
 		sub := os.Args[2]
@@ -669,6 +748,24 @@ func main() {
 				os.Exit(2)
 			}
 			if err := tasksUpdate(worktree, *id, *status, *due); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		case "status-checker":
+			fs := flag.NewFlagSet("tasks status-checker", flag.ExitOnError)
+			w := fs.String("worktree", ".", "worktree")
+			fs.Parse(os.Args[3:])
+			worktree := worktreeFromEnvOrFlag(*w)
+			if err := tasksStatusChecker(worktree); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		case "suggester":
+			fs := flag.NewFlagSet("schedule suggester", flag.ExitOnError)
+			w := fs.String("worktree", ".", "worktree")
+			fs.Parse(os.Args[3:])
+			worktree := worktreeFromEnvOrFlag(*w)
+			if err := scheduleSuggester(worktree); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				os.Exit(1)
 			}
