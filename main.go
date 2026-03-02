@@ -28,6 +28,9 @@ func worktreeFromEnvOrFlag(wFlag string) string {
 	if wFlag != "" && wFlag != "." {
 		return wFlag
 	}
+	if w := os.Getenv("PICOCLAW_WORKSPACE"); w != "" {
+		return w
+	}
 	if w := os.Getenv("OPENLOS_WORKTREE"); w != "" {
 		return w
 	}
@@ -456,12 +459,12 @@ func install(dir string, force bool) error {
 		return fmt.Errorf("load embedded assets: %w", err)
 	}
 
-	// Write embedded .opencode files.
+	// Write embedded .picoclaw files.
 	err = fs.WalkDir(embedded, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(dir, ".opencode", filepath.FromSlash(path))
+		target := filepath.Join(dir, ".picoclaw", filepath.FromSlash(path))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
@@ -484,8 +487,8 @@ func install(dir string, force bool) error {
 		return err
 	}
 
-	// Copy the running binary to .opencode/bin/openlos.
-	binDst := filepath.Join(dir, ".opencode", "bin", "openlos")
+	// Copy the running binary to .picoclaw/bin/openlos.
+	binDst := filepath.Join(dir, ".picoclaw", "bin", "openlos")
 	if !force {
 		if _, err := os.Stat(binDst); err == nil {
 			fmt.Printf("  skip (exists): %s\n", binDst)
@@ -501,7 +504,7 @@ func install(dir string, force bool) error {
 	if err != nil {
 		return fmt.Errorf("eval symlinks: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, ".opencode", "bin"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".picoclaw", "bin"), 0o755); err != nil {
 		return err
 	}
 	in, err := os.Open(exe)
@@ -733,7 +736,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		fmt.Printf("Installing openlos into %s/.opencode/\n", d)
+		fmt.Printf("Installing openlos into %s/.picoclaw/\n", d)
 		if err := install(d, *force); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)

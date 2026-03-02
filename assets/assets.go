@@ -1,6 +1,6 @@
-// Package assets embeds the staged .opencode configuration tree.
+// Package assets embeds the staged .picoclaw configuration tree.
 // Run `go generate ./assets/` (or `make generate`) to refresh the staged files
-// from the source .opencode directory before building.
+// from the source .picoclaw directory before building.
 package assets
 
 import (
@@ -8,11 +8,11 @@ import (
 	"io/fs"
 )
 
-//go:embed opencode
+//go:embed picoclaw
 var embeddedFS embed.FS
 
-// FS returns a sub-filesystem rooted at the embedded "opencode" directory,
-// mirroring the layout of .opencode/ at the repo root.
+// FS returns a sub-filesystem rooted at the embedded "picoclaw" directory,
+// mirroring the layout of .picoclaw/ at the repo root.
 func FS() (fs.FS, error) {
-	return fs.Sub(embeddedFS, "opencode")
+	return fs.Sub(embeddedFS, "picoclaw")
 }
