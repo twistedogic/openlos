@@ -7,7 +7,7 @@ build: clean generate generate_sql
 
 clean:
 	rm -f $(BIN)
-	rm -rf assets/opencode
+	rm -rf assets/picoclaw
 
 clean_sql:
 	rm -rf db/

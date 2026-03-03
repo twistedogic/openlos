@@ -936,7 +936,7 @@ func main() {
 		}
 	case "install":
 		fs := flag.NewFlagSet("install", flag.ExitOnError)
-		dir := fs.String("dir", ".", "target directory to install .opencode into")
+		dir := fs.String("dir", ".", "target directory to install .picoclaw into")
 		force := fs.Bool("force", false, "overwrite existing files")
 		fs.Parse(os.Args[2:])
 		d := *dir
