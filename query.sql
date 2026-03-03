@@ -77,3 +77,7 @@ ON CONFLICT(date) DO UPDATE SET
     focus = excluded.focus,
     blocks = excluded.blocks
 RETURNING *;
+
+-- name: ListSchedules :many
+SELECT * FROM schedule
+ORDER BY date DESC;

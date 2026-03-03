@@ -115,6 +115,7 @@ Tools are defined in picoclaw's markdown format and execute the Go CLI via `exec
 | `goals_update` | `goals update --id [--status] [--description]` | Update goal status or description |
 | `schedule_read` | `schedule read [--date]` | Read schedule for a date |
 | `schedule_write` | `schedule write --date --focus [--blocks]` | Write schedule for a date |
+| `export` | `export` | Export all data as Markdown report |
 
 ### 3. Skills
 
@@ -372,4 +373,3 @@ Picoclaw Heartbeat (every 30 min)
 
 - Add more chat channels (Telegram, Discord, WhatsApp) via picoclaw config
 - Integrate with picoclaw's memory system for long-term context
-- Export command to emit Markdown reports

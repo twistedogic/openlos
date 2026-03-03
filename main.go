@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -515,6 +516,120 @@ func scheduleWrite(worktree, date, focus string, blocks []string) error {
 	return nil
 }
 
+// export
+
+func exportMarkdown(worktree string) error {
+	q, sqlDB, err := openDB(worktree)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	var sb strings.Builder
+	sb.WriteString("# Openlos Export\n\n")
+	sb.WriteString(fmt.Sprintf("Exported: %s\n\n", time.Now().Format(time.DateTime)))
+
+	sb.WriteString("## Ideas\n\n")
+	ideas, err := q.ListIdeas(context.Background(), 1000)
+	if err != nil {
+		return err
+	}
+	if len(ideas) == 0 {
+		sb.WriteString("_No ideas captured_\n\n")
+	} else {
+		sb.WriteString("| # | Created | Text |\n")
+		sb.WriteString("|---|---------|------|\n")
+		for i, idea := range ideas {
+			sb.WriteString(fmt.Sprintf("| %d | %s | %s |\n", i+1, time.Unix(idea.Created, 0).Format(time.DateTime), idea.Text))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Goals\n\n")
+	goals, err := q.ListGoals(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(goals) == 0 {
+		sb.WriteString("_No goals found_\n\n")
+	} else {
+		sb.WriteString("| Status | Title | Description | Created |\n")
+		sb.WriteString("|--------|-------|-------------|---------|\n")
+		for _, g := range goals {
+			desc := ""
+			if g.Description != nil {
+				desc = *g.Description
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", g.Status, g.Title, desc, time.Unix(g.Created, 0).Format(time.DateTime)))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Tasks\n\n")
+	tasks, err := q.ListTasks(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(tasks) == 0 {
+		sb.WriteString("_No tasks found_\n\n")
+	} else {
+		sb.WriteString("| Status | Title | Due | Goal ID |\n")
+		sb.WriteString("|--------|-------|-----|---------|\n")
+		for _, t := range tasks {
+			due := ""
+			if t.Due != nil {
+				due = *t.Due
+			}
+			goal := ""
+			if t.GoalID != nil {
+				goal = *t.GoalID
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", t.Status, t.Title, due, goal))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Schedule\n\n")
+	schedules, err := q.ListSchedules(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(schedules) == 0 {
+		sb.WriteString("_No schedules found_\n\n")
+	} else {
+		slices.SortFunc(schedules, func(a, b db.Schedule) int {
+			return strings.Compare(a.Date, b.Date)
+		})
+		sb.WriteString("| Date | Time | Activity | Focus |\n")
+		sb.WriteString("|------|------|----------|-------|\n")
+		for _, s := range schedules {
+			blocks := []TimeBlock{}
+			if s.Blocks != nil {
+				parsed, _ := unmarshalBlocks(*s.Blocks)
+				blocks = parsed
+			}
+			if len(blocks) == 0 {
+				sb.WriteString(fmt.Sprintf("| %s | | | %s |\n", s.Date, s.Focus))
+			} else {
+				slices.SortFunc(blocks, func(a, b TimeBlock) int {
+					return strings.Compare(a.Time, b.Time)
+				})
+				for i, b := range blocks {
+					focus := s.Focus
+					if i > 0 {
+						focus = ""
+					}
+					sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", s.Date, b.Time, b.Activity, focus))
+				}
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	fmt.Print(sb.String())
+	return nil
+}
+
 // install
 
 func copyEmbeddedFile(embedded fs.FS, path, target string) error {
@@ -609,7 +724,7 @@ func install(dir string, force bool) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: openlos <ideas|tasks|goals|schedule|install> <subcommand> [flags]")
+		fmt.Println("usage: openlos <ideas|tasks|goals|schedule|install|export> <subcommand> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -839,6 +954,15 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("Done.")
+	case "export":
+		fs := flag.NewFlagSet("export", flag.ExitOnError)
+		w := fs.String("worktree", ".", "worktree")
+		fs.Parse(os.Args[2:])
+		worktree := worktreeFromEnvOrFlag(*w)
+		if err := exportMarkdown(worktree); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Println("unknown command:", cmd)
 		os.Exit(2)

@@ -244,6 +244,34 @@ func (q *Queries) ListIdeas(ctx context.Context, limit int64) ([]Idea, error) {
 	return items, nil
 }
 
+const listSchedules = `-- name: ListSchedules :many
+SELECT date, focus, blocks FROM schedule
+ORDER BY date DESC
+`
+
+func (q *Queries) ListSchedules(ctx context.Context) ([]Schedule, error) {
+	rows, err := q.db.QueryContext(ctx, listSchedules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Schedule
+	for rows.Next() {
+		var i Schedule
+		if err := rows.Scan(&i.Date, &i.Focus, &i.Blocks); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasks = `-- name: ListTasks :many
 SELECT id, title, goal_id, status, created, due FROM tasks
 ORDER BY created DESC
